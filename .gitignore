@@ -1,0 +1,38 @@
+# ============================================================================
+# TDC UART Vivado 项目 .gitignore
+# ============================================================================
+# 白名单模式：排除所有文件，只保留指定的文件夹
+# ============================================================================
+
+# 排除所有文件和文件夹
+/*
+
+# 保留这些文件和文件夹
+!.gitignore
+!README.md
+!data/
+!scripts/
+!tdc_results/
+!TDC_UART.srcs/
+
+# TDC_UART.srcs 目录下，只保留特定子目录
+TDC_UART.srcs/*
+!TDC_UART.srcs/sources_1/
+!TDC_UART.srcs/constrs_1/
+
+# sources_1 目录下，只保留 new 文件夹
+TDC_UART.srcs/sources_1/*
+!TDC_UART.srcs/sources_1/new/
+
+# constrs_1 目录下，只保留 new 文件夹
+TDC_UART.srcs/constrs_1/*
+!TDC_UART.srcs/constrs_1/new/
+
+# Python 缓存文件（无论在哪个目录都排除）
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# 操作系统文件
+**/.DS_Store
+**/Thumbs.db
