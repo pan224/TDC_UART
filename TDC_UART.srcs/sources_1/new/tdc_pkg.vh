@@ -15,7 +15,7 @@
 // ============================================================================
 `define DEPTH           24          // 可采样的Carry Chain深度
 `define HIST_SIZE       262144      // 2^18 直方图大小
-`define CLK_IN_PS       3864        // 初始时钟周期(皮秒)
+`define CLK_IN_PS       3846        // 初始时钟周期(皮秒)
 `define PE_INTBITS      9           // 优先编码器内部位宽
 `define CALIB_DEADTIME  8           // 校准死区时间
 `define RO_LENGTH       55          // 环形振荡器长度(奇数)

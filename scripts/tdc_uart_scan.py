@@ -402,7 +402,7 @@ class TDCDataProcessor:
         self.data_list = data_list
         
         # 时间常数 (260MHz系统)
-        self.CLK_PERIOD = 3864  # ps (1/260MHz)
+        self.CLK_PERIOD = 3846  # ps (1/260MHz)
         self.TDC_BIN = 1        # fine值已经是ps单位
         self.PHASE_STEP = 17.17 # ps/step (VCO=1040MHz)
         
@@ -1201,7 +1201,7 @@ def analyze_pixel_delay(data_list, pulse_count):
     down_coarse = np.array([d['coarse'] for d in down_data])
     
     # 时间常数
-    CLK_PERIOD = 3864  # ps (260MHz)
+    CLK_PERIOD = 3846  # ps (260MHz)
     
     # 计算总时间 (粗计数 + 精细时间)
     up_total_time = up_coarse * CLK_PERIOD + up_fine
