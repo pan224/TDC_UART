@@ -1,10 +1,10 @@
-# 🚀 TDC (Time-to-Digital Converter) UART 集成系统
+# TDC (Time-to-Digital Converter) UART 集成系统
 
-## 📑 项目概述
+## 项目概述
 
 本项目是一个基于 **Xilinx Kintex-7 (xc7k325t-ffg900-2)** 的双通道高精度 TDC 设计。通信链路已由千兆以太网切换为 **UART 串口**，波特率为 **115200**。系统集成了 TDC 测量核心、像素芯片激励控制、相位扫描测试与上位机交互功能，可通过 UART 完成测量数据回传、精细相位扫描、在线校准和像素控制。
 
-### ✨ 主要特性
+### 主要特性
 
 *   **高分辨率**：约 xxx ps（待测）（基于 96-tap CARRY4 延迟线 + 四相位插值架构）。
 *   **时钟架构**：260MHz 专用 TDC 采样时钟 + 200MHz 系统通信时钟。
@@ -15,7 +15,7 @@
 
 ---
 
-## 🏗️ 系统架构
+## 系统架构
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -40,7 +40,7 @@
 
 ---
 
-## 🧩 关键模块详解
+## 关键模块详解
 
 ### 1. `test_tdc_uart` (顶层模块)
 - **时钟与复位**：接收差分 200MHz 系统时钟，CPU_RESET 低有效，包含上电延时逻辑以确保复位稳定。
@@ -66,7 +66,7 @@
 - **功能**：负责串口命令解码与测量数据回传，管理数据 FIFO，处理扫描/校准/像素指令。
 - **配对逻辑**：数据发送严格保持 **UP → DOWN** 配对顺序，确保数据完整性。
 
-#### 📡 命令格式 (32-bit, Little Endian)
+#### 命令格式 (32-bit, Little Endian)
 
 | Bit | 描述 | 选项/值 |
 | :--- | :--- | :--- |
@@ -78,7 +78,7 @@
 | **[18:13]** | **Pixel CSA** | CSA[5:0] 脉冲触发位掩码 |
 | **[12:0]** | 保留 | 0 |
 
-#### 📦 数据格式 (32-bit, Little Endian)
+#### 数据格式 (32-bit, Little Endian)
 
 | Bit | 描述 | 详细说明 |
 | :--- | :--- | :--- |
@@ -98,19 +98,19 @@
 
 ---
 
-## 💻 上位机脚本 (Python Tools)
+## 上位机脚本 (Python Tools)
 
 位于 `scripts/` 目录下，提供三种工具满足不同测试需求。
 
-### 1. 🖥️ `tdc_uart_scan.py` (命令行工具)
+### 1. `tdc_uart_scan.py` (命令行工具)
 基础调试与校准工具，提供轻量级的串口交互。
 *   **功能**：执行全扫描、单步测试、启动校准。
 *   **数据处理**：实时解码 32 位数据流，按照 UP/DOWN 分类并计算配对延迟。
 
-### 2. 📊 `tdc_uart_scan_GUI.py` (图形化工作台)
+### 2. `tdc_uart_scan_GUI.py` (图形化工作台)
 功能强大的可视化控制台，专为像素芯片测试优化。
 
-**🌟 主要特性：**
+**主要特性：**
 *   **交互式控制**：一键触发 RST/CSA 脉冲，支持 6 个 CSA 通道独立开关。
 *   **自动化测试序列**：
     *   **Fixed Mode**：定点监测，生成实时 2D 分布直方图。
@@ -120,7 +120,7 @@
     *   计算公式：$\Delta T = (\text{Coarse}_{DN} - \text{Coarse}_{UP}) \times 3846.15 - (\text{Fine}_{DN} - \text{Fine}_{UP})$。
 *   **数据导出**：支持 CSV 原始数据保存及统计图表导出。
 
-**📂 数据目录规范：**
+**数据目录规范：**
 脚本依赖特定的目录结构进行数据归档：
 ```
 data/
@@ -133,10 +133,10 @@ data/
 └── ...
 ```
 
-### 3. 📈 `tdc_trend_analysis.py` (趋势分析工具)
+### 3. `tdc_trend_analysis.py` (趋势分析工具)
 用于批量后处理数据，分析像素芯片延时单元的 **Unit Delay (τ)** 特性。
 
-**🧮 核心算法：**
+**核心算法：**
 基于像素物理结构的延时关系模型：
 ```math
 \begin{aligned}
@@ -151,18 +151,18 @@ data/
 
 ---
 
-## 📂 文件结构索引
+## 文件结构索引
 
 ```
 TDC_UART/
-├── TDC_UART.xpr                     # 🛠️ Vivado 工程文件
-├── README.md                       # 📄 本文档
-├── scripts/                         # 🐍 Python 上位机脚本
+├── TDC_UART.xpr                     # Vivado 工程文件
+├── README.md                       # 本文档
+├── scripts/                         # Python 上位机脚本
 │   ├── tdc_uart_scan.py            #     - 命令行扫描/校准
 │   ├── tdc_uart_scan_GUI.py        #     - GUI 像素控制与采集
 │   └── tdc_trend_analysis.py       #     - 延时单元趋势分析
-├── data/                            # 💾 实验数据存档目录
-├── TDC_UART.srcs/                   # 🧬 FPGA 源代码
+├── data/                            # 实验数据存档目录
+├── TDC_UART.srcs/                   # FPGA 源代码
 │   ├── sources_1/
 │   │   ├── new/
 │   │   │   ├── test_tdc_uart.v         # Top Module
@@ -174,12 +174,12 @@ TDC_UART/
 │   │   │   ├── tdc_scan_ctrl.v         # Phase Shift Ctrl
 │   │   │   └── ...
 │   │   └── ip/                      # Vivado IPs (Clock Wizard, FIFO, ILA)
-│   └── constrs_1/                   # 📌 物理/时序约束
+│   └── constrs_1/                   # 物理/时序约束
 └── ...
 ```
 
 ---
 
-## 👨‍💻 作者
+## 作者
 
 **pan224**
