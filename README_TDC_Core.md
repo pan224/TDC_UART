@@ -108,7 +108,10 @@ graph LR
   - 管理数据流水线 (`valid_pipe`)，确保 LUT 读操作时序正确。
   - **最终计算**：
     - 在校准完成后，读取 LUT 获得归一化系数。
-    - 公式：$$ \text{Time} = \frac{\text{LUT\_Data} \times \text{CLK\_Period}}{2^{18}} $$
+    - 公式：
+      ```math
+      \text{Time} = \frac{\text{LUT\_Data} \times \text{CLK\_Period}}{2^{18}}
+      ```
     - 输出最终的高精度 **13 位时间戳**。
 
 ### 2.6 环形振荡器 (`ro.v`)

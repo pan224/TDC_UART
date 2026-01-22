@@ -117,7 +117,10 @@
     *   **6-Step Scan**：自动遍历 CSA0-CSA5，生成 **3D 瀑布图** 对比通道响应。
 *   **实时配对运算**：
     *   自动处理粗计数(Coarse)溢出翻转。
-    *   计算公式：$\Delta T = (\text{Coarse}_{DN} - \text{Coarse}_{UP}) \times 3846.15 - (\text{Fine}_{DN} - \text{Fine}_{UP})$。
+    *   计算公式：
+        ```math
+        \Delta T = (\text{Coarse}_{DN} - \text{Coarse}_{UP}) \times 3846.15 - (\text{Fine}_{DN} - \text{Fine}_{UP})
+        ```
 *   **数据导出**：支持 CSV 原始数据保存及统计图表导出。
 
 **数据目录规范：**
