@@ -102,12 +102,12 @@
 
 位于 `scripts/` 目录下，提供三种工具满足不同测试需求。
 
-### 1. `tdc_uart_scan.py` (命令行工具)
+### 1. `tdc_uart_scan_internal.py` (命令行工具，内部激励)
 基础调试与校准工具，提供轻量级的串口交互。
 *   **功能**：执行全扫描、单步测试、启动校准。
 *   **数据处理**：实时解码 32 位数据流，按照 UP/DOWN 分类并计算配对延迟。
 
-### 2. `tdc_uart_scan_GUI.py` (图形化工作台)
+### 2. `tdc_uart_scan_gui_external.py` (图形化工作台，外部激励)
 功能强大的可视化控制台，专为像素芯片测试优化。
 
 **主要特性：**
@@ -161,8 +161,9 @@ TDC_UART/
 ├── TDC_UART.xpr                     # Vivado 工程文件
 ├── README.md                       # 本文档
 ├── scripts/                         # Python 上位机脚本
-│   ├── tdc_uart_scan.py            #     - 命令行扫描/校准
-│   ├── tdc_uart_scan_GUI.py        #     - GUI 像素控制与采集
+│   ├── tdc_uart_scan_internal.py   #     - 内部激励命令行扫描/校准
+│   ├── tdc_uart_scan_gui_external.py #   - 外部激励 GUI 像素控制与采集
+│   ├── tdc_uart_scan_gui_internal.py #   - 内部激励 GUI（双通道扫描）
 │   └── tdc_trend_analysis.py       #     - 延时单元趋势分析
 ├── data/                            # 实验数据存档目录
 ├── TDC_UART.srcs/                   # FPGA 源代码

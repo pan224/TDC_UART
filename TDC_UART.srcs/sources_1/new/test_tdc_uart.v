@@ -120,7 +120,7 @@ module test_tdc_uart(
         .tdc_reset_trigger(TDC_RESET),// TDC 复位触发，高有效
         
         // 扫描测试使能 (默认启用)1'b1表示使用内部信号，1'b0表示使用外部信号
-        .scan_test_en(1'b0),
+        .scan_test_en(1'b1),
         
         // UART 接口
         .uart_rxd(UART_RXD),

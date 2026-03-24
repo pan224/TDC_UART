@@ -15,11 +15,11 @@ TDC UART 扫描测试程序
   [12:0]   : 保留
 
 数据格式 (32位):
-  [31:30]  : 类型 (00=UP, 01=DOWN, 10=INFO, 11=CMD)
-  [29:22]  : ID (相位索引)
-  [21:9]   : 精细时间 (13-bit)
-  [8]      : 通道标志 (1=UP, 0=DOWN)
-  [7:0]    : 粗计数低8位
+    [31:30]  : 类型 (00=UP, 01=DOWN, 10=INFO, 11=CMD)
+    [29:24]  : ID (6-bit, 0~63 循环)
+    [23:11]  : 精细时间 (13-bit)
+    [10]     : 通道标志 (1=UP, 0=DOWN)
+    [9:0]    : 粗计数低10位
 
 UART配置:
   波特率: 115200
@@ -274,17 +274,17 @@ class TDCUartScanner:
                     # 小端序解析 (LSB First)
                     value = struct.unpack('<I', raw_bytes)[0]
                     
-                    # 解析数据包
+                    # 解析数据包（与 FPGA uart_comm_ctrl_tdc.v 对齐）
                     # [31:30] = 类型 (00=UP, 01=DOWN, 10=INFO, 11=CMD)
-                    # [29:22] = ID (相位索引)
-                    # [21:9]  = 精细时间 (13-bit)
-                    # [8]     = 通道标志 (1=UP通道, 0=DOWN通道)
-                    # [7:0]   = 粗计数低8位
+                    # [29:24] = ID (6-bit)
+                    # [23:11] = 精细时间 (13-bit)
+                    # [10]    = 通道标志 (1=UP通道, 0=DOWN通道)
+                    # [9:0]   = 粗计数低10位
                     data_type = (value >> 30) & 0x3
-                    data_id = (value >> 22) & 0xFF
-                    fine_time = (value >> 9) & 0x1FFF
-                    channel_flag = (value >> 8) & 0x1
-                    coarse_time = value & 0xFF
+                    data_id = (value >> 24) & 0x3F
+                    fine_time = (value >> 11) & 0x1FFF
+                    channel_flag = (value >> 10) & 0x1
+                    coarse_time = value & 0x3FF
                     
                     # 过滤命令类型的回显数据
                     if data_type == 0b11:  # CMD 类型
@@ -409,6 +409,99 @@ class TDCDataProcessor:
         # 分离UP和DOWN通道
         self.up_data = [d for d in data_list if d['type'] == 0b00]
         self.down_data = [d for d in data_list if d['type'] == 0b01]
+
+    def _get_phase_axis(self, channel_data):
+        """Return phase axis and label.
+
+        If ID is 6-bit cyclic (0..63) and data length exceeds one cycle,
+        use acquisition index as phase step axis for scan visualization.
+        """
+        if not channel_data:
+            return np.array([]), '相位索引 (Phase ID)'
+
+        ids = np.array([d['id'] for d in channel_data])
+        unique_ids = np.unique(ids)
+
+        # FPGA current UART protocol uses 6-bit ID. For long scans this wraps,
+        # so index axis better represents scan steps (e.g. 0..224).
+        if ids.max() <= 63 and len(channel_data) > len(unique_ids) and len(unique_ids) <= 64:
+            return np.arange(len(channel_data), dtype=float), '扫描步序号 (Phase Step Index)'
+
+        return ids.astype(float), '相位索引 (Phase ID)'
+
+    def _estimate_period_len(self, fine_values):
+        """Estimate scan period length in steps from data."""
+        n = len(fine_values)
+        if n <= 1:
+            return n
+
+        diffs = np.diff(fine_values)
+        jumps = np.where(diffs > (self.CLK_PERIOD / 2))[0]
+        if len(jumps) >= 2:
+            spacing = np.diff(jumps)
+            candidate = int(round(np.median(spacing)))
+            if 32 <= candidate <= 512:
+                return candidate
+
+        if n <= 256:
+            return n
+
+        if n % 225 == 0:
+            return 225
+
+        return 225
+
+    def _build_linearized_line(self, channel_data):
+        """Find truncation point and rebuild a linearized phase curve.
+
+        Steps:
+        1. Find truncation point near min->max jump
+        2. Circularly shift so truncation point maps to period end
+        3. Flip horizontal axis to make slope positive
+        4. Fold repeated cycles and average by phase bin
+        """
+        if not channel_data:
+            return {
+                'x': np.array([]),
+                'y': np.array([]),
+                'cut': 0,
+                'period': 0,
+                'jump': 0.0,
+            }
+
+        fine = np.array([d['fine'] for d in channel_data], dtype=float)
+        n = len(fine)
+        period = self._estimate_period_len(fine)
+        period = max(1, min(period, n))
+
+        diffs = np.diff(fine)
+        jump_idx = int(np.argmax(diffs)) if len(diffs) > 0 else 0
+        cut = (jump_idx + 1) % period
+        jump_val = float(diffs[jump_idx]) if len(diffs) > 0 else 0.0
+
+        idx = np.arange(n)
+        shifted = (idx + (period - cut)) % period
+        flipped = (period - 1) - shifted
+
+        # Fold all cycles into one period by averaging same x bin
+        x_int = flipped.astype(int)
+        sums = np.bincount(x_int, weights=fine, minlength=period)
+        counts = np.bincount(x_int, minlength=period)
+        valid = counts > 0
+
+        x_line = np.arange(period, dtype=float)[valid]
+        y_line = sums[valid] / counts[valid]
+
+        x_line_ps = x_line * self.PHASE_STEP
+
+        return {
+            'x': x_line_ps,
+            'x_step': x_line,
+            'y': y_line,
+            'cut': cut,
+            'period': period,
+            'jump': jump_val,
+        }
         
     def process(self):
         """处理和分析数据"""
@@ -459,6 +552,7 @@ class TDCDataProcessor:
         fine = np.array([d['fine'] for d in channel_data])
         coarse = np.array([d['coarse'] for d in channel_data])
         ids = np.array([d['id'] for d in channel_data])
+        phase_axis, phase_label = self._get_phase_axis(channel_data)
         
         fine_time = fine * self.TDC_BIN
         coarse_time = coarse * self.CLK_PERIOD
@@ -466,6 +560,8 @@ class TDCDataProcessor:
         
         print(f"  样本数: {len(channel_data)}")
         print(f"  ID 范围: {ids.min()} - {ids.max()}")
+        if len(phase_axis) > 0:
+            print(f"  {phase_label}: {phase_axis.min()} - {phase_axis.max()}")
         print(f"  Fine 范围: {fine.min()} - {fine.max()}")
         print(f"  Coarse 范围: {coarse.min()} - {coarse.max()}")
         print(f"  Fine 时间: {fine_time.min():.1f} - {fine_time.max():.1f} ps")
@@ -483,38 +579,29 @@ class TDCDataProcessor:
         print(f"\n扫描模式分析 ({len(self.up_data)}个相位):")
         print("-" * 50)
         print(f"提示: 225步(17.17ps/step)可覆盖完整3864ps周期")
-        
-        fine = np.array([d['fine'] for d in self.up_data])
-        ids = np.array([d['id'] for d in self.up_data])
-        
-        actual_fine_time = fine
-        phase_indices = ids
-        
-        # 检测环绕点
-        diffs = np.diff(actual_fine_time)
-        jump_threshold = self.CLK_PERIOD / 2
-        wrap_points = np.where(np.abs(diffs) > jump_threshold)[0]
-        
-        print(f"  相位范围: {phase_indices.min()} - {phase_indices.max()}")
-        print(f"  Fine time 范围: {actual_fine_time.min():.1f} - {actual_fine_time.max():.1f} ps")
-        print(f"  Fine time 变化幅度: {actual_fine_time.max() - actual_fine_time.min():.1f} ps")
-        print(f"  理论关系（无延迟）: Fine = {self.CLK_PERIOD:.0f} - Phase × {self.PHASE_STEP:.2f}")
-        
-        if len(wrap_points) > 0:
-            print(f"  \n检测到 {len(wrap_points)} 个环绕点（固定布线延迟导致）")
-            for i, wp in enumerate(wrap_points):
-                wrap_phase = phase_indices[wp]
-                estimated_delay = self.CLK_PERIOD - wrap_phase * self.PHASE_STEP
-                print(f"    环绕点{i+1}: Phase {phase_indices[wp]} → {phase_indices[wp+1]}")
-                print(f"              估计布线延迟 ≈ {estimated_delay:.1f} ps")
-        
-        if len(phase_indices) > 2:
-            coeffs = np.polyfit(phase_indices, actual_fine_time, 1)
-            fit_line = np.polyval(coeffs, phase_indices)
-            residuals = actual_fine_time - fit_line
-            
-            print(f"  实际斜率: {coeffs[0]:.3f} ps/phase (理论: {-self.PHASE_STEP:.2f})")
-            print(f"  斜率误差: {abs(coeffs[0] + self.PHASE_STEP):.3f} ps/phase")
+
+        line_up = self._build_linearized_line(self.up_data)
+        x_line = line_up['x']
+        y_line = line_up['y']
+
+        if len(y_line) == 0:
+            print("  [WARN] 线性化曲线为空")
+            return
+
+        print(f"  截断点(步): {line_up['cut']} / 周期点数: {line_up['period']}")
+        print(f"  截断跳变幅度: {line_up['jump']:.1f} ps")
+        print(f"  线性化相位范围: {x_line.min():.1f} - {x_line.max():.1f} ps")
+        print(f"  Fine time 范围: {y_line.min():.1f} - {y_line.max():.1f} ps")
+        print(f"  Fine time 变化幅度: {y_line.max() - y_line.min():.1f} ps")
+        print("  理论关系（翻转后）: Fine = PhaseDelay + offset")
+
+        if len(x_line) > 2:
+            coeffs = np.polyfit(x_line, y_line, 1)
+            fit_line = np.polyval(coeffs, x_line)
+            residuals = y_line - fit_line
+
+            print(f"  实际斜率: {coeffs[0]:.3f} ps/ps (理论: 1.000)")
+            print(f"  斜率误差: {abs(coeffs[0] - 1.0):.3f} ps/ps")
             print(f"  RMS 误差: {np.sqrt(np.mean(residuals**2)):.2f} ps")
             print(f"  最大偏差: {np.max(np.abs(residuals)):.2f} ps")
     
@@ -531,9 +618,14 @@ class TDCDataProcessor:
         print("\n" + "="*70)
         print("TDC 性能分析")
         print("="*70)
-        
-        fine_values = np.array([d['fine'] for d in self.up_data])
-        phase_ids = np.array([d['id'] for d in self.up_data])
+
+        line_up = self._build_linearized_line(self.up_data)
+        phase_axis = line_up['x']
+        fine_values = line_up['y']
+
+        if len(fine_values) < 10:
+            print("[WARN] 线性化后数据量不足，无法进行性能分析")
+            return None
         
         performance = {}
         
@@ -558,8 +650,8 @@ class TDCDataProcessor:
         print("\n[2] 分辨率和精度分析:")
         print("-" * 50)
         
-        sorted_indices = np.argsort(phase_ids)
-        sorted_phases = phase_ids[sorted_indices]
+        sorted_indices = np.argsort(phase_axis)
+        sorted_phases = phase_axis[sorted_indices]
         sorted_times = fine_values[sorted_indices]
         
         time_diffs = np.diff(sorted_times)
@@ -630,7 +722,7 @@ class TDCDataProcessor:
             if len(valid_diffs) > 0:
                 inl_lsb = inl / avg_resolution
                 
-                print(f"  拟合斜率: {coeffs[0]:.3f} ps/phase (理论: {-self.PHASE_STEP:.2f})")
+                print(f"  拟合斜率: {coeffs[0]:.3f} ps/ps (理论: 1.000)")
                 print(f"  INL 最大值: {inl_lsb.max():.3f} LSB ({inl.max():.2f} ps)")
                 print(f"  INL 最小值: {inl_lsb.min():.3f} LSB ({inl.min():.2f} ps)")
                 print(f"  INL RMS: {np.sqrt(np.mean(inl_lsb**2)):.3f} LSB")
@@ -711,47 +803,66 @@ class TDCDataProcessor:
         
         # 子图1: UP通道 Fine Time
         if len(self.up_data) > 0:
-            up_ids = [d['id'] for d in self.up_data]
+            up_axis, up_xlabel = self._get_phase_axis(self.up_data)
             up_fine = np.array([d['fine'] for d in self.up_data])
             
-            axes[0, 0].plot(up_ids, up_fine, 'b.-', markersize=3, linewidth=1)
-            axes[0, 0].set_xlabel('相位索引 (Phase ID)')
+            axes[0, 0].plot(up_axis, up_fine, 'b.-', markersize=3, linewidth=1)
+            axes[0, 0].set_xlabel(up_xlabel)
             axes[0, 0].set_ylabel('Fine Time (ps)')
             axes[0, 0].set_title('UP 通道 - Fine Time')
             axes[0, 0].grid(True, alpha=0.3)
         
         # 子图2: DOWN通道 Fine Time
         if len(self.down_data) > 0:
-            down_ids = [d['id'] for d in self.down_data]
+            down_axis, down_xlabel = self._get_phase_axis(self.down_data)
             down_fine = np.array([d['fine'] for d in self.down_data])
             
-            axes[0, 1].plot(down_ids, down_fine, 'r.-', markersize=3, linewidth=1)
-            axes[0, 1].set_xlabel('相位索引 (Phase ID)')
+            axes[0, 1].plot(down_axis, down_fine, 'r.-', markersize=3, linewidth=1)
+            axes[0, 1].set_xlabel(down_xlabel)
             axes[0, 1].set_ylabel('Fine Time (ps)')
             axes[0, 1].set_title('DOWN 通道 - Fine Time')
             axes[0, 1].grid(True, alpha=0.3)
         
-        # 子图3: UP通道 Coarse Time
+        # 子图3: 合并 Coarse Time
         if len(self.up_data) > 0:
-            up_ids = [d['id'] for d in self.up_data]
+            up_axis, up_xlabel = self._get_phase_axis(self.up_data)
             up_coarse = np.array([d['coarse'] for d in self.up_data])
-            
-            axes[1, 0].plot(up_ids, up_coarse, 'b.-', markersize=3, linewidth=1)
-            axes[1, 0].set_xlabel('相位索引 (Phase ID)')
-            axes[1, 0].set_ylabel('Coarse Count (低8位)')
-            axes[1, 0].set_title('UP 通道 - Coarse Count')
-            axes[1, 0].grid(True, alpha=0.3)
-        
-        # 子图4: DOWN通道 Coarse Time
+            axes[1, 0].plot(up_axis, up_coarse, 'b.-', markersize=3, linewidth=1, label='UP')
+
         if len(self.down_data) > 0:
-            down_ids = [d['id'] for d in self.down_data]
+            down_axis, down_xlabel = self._get_phase_axis(self.down_data)
             down_coarse = np.array([d['coarse'] for d in self.down_data])
-            
-            axes[1, 1].plot(down_ids, down_coarse, 'r.-', markersize=3, linewidth=1)
-            axes[1, 1].set_xlabel('相位索引 (Phase ID)')
-            axes[1, 1].set_ylabel('Coarse Count (低8位)')
-            axes[1, 1].set_title('DOWN 通道 - Coarse Count')
-            axes[1, 1].grid(True, alpha=0.3)
+            axes[1, 0].plot(down_axis, down_coarse, 'r.-', markersize=3, linewidth=1, label='DOWN')
+
+        axes[1, 0].set_xlabel('扫描步序号 (Phase Step Index)')
+        axes[1, 0].set_ylabel('Coarse Count (低10位)')
+        axes[1, 0].set_title('UP/DOWN 通道 - Coarse Count')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+
+        # 子图4: 重排后的线性化直线
+        line_up = self._build_linearized_line(self.up_data)
+        line_down = self._build_linearized_line(self.down_data)
+
+        if len(line_up['x']) > 0:
+            axes[1, 1].plot(line_up['x'], line_up['y'], 'b.-', markersize=3, linewidth=1, label='UP 重排')
+            if len(line_up['x']) > 2:
+                up_fit = np.polyfit(line_up['x'], line_up['y'], 1)
+                axes[1, 1].plot(line_up['x'], np.polyval(up_fit, line_up['x']), 'b--', linewidth=1,
+                                label=f'UP拟合 slope={up_fit[0]:.3f} ps/ps')
+
+        if len(line_down['x']) > 0:
+            axes[1, 1].plot(line_down['x'], line_down['y'], 'r.-', markersize=3, linewidth=1, label='DOWN 重排')
+            if len(line_down['x']) > 2:
+                down_fit = np.polyfit(line_down['x'], line_down['y'], 1)
+                axes[1, 1].plot(line_down['x'], np.polyval(down_fit, line_down['x']), 'r--', linewidth=1,
+                                label=f'DOWN拟合 slope={down_fit[0]:.3f} ps/ps')
+
+        axes[1, 1].set_xlabel('重排后相位延时 (ps)')
+        axes[1, 1].set_ylabel('Fine Time (ps)')
+        axes[1, 1].set_title('截断重排后的线性化曲线')
+        axes[1, 1].legend()
+        axes[1, 1].grid(True, alpha=0.3)
         
         # 子图5: Fine Time 分布
         if len(self.up_data) > 0:
@@ -769,17 +880,21 @@ class TDCDataProcessor:
         axes[2, 0].grid(True, alpha=0.3)
         
         # 子图6: 扫描曲线对比
+        x_label_scan = '相位索引 (Phase ID)'
         if len(self.up_data) > 0:
-            up_ids = np.array([d['id'] for d in self.up_data])
+            up_axis, up_xlabel = self._get_phase_axis(self.up_data)
             up_fine = np.array([d['fine'] for d in self.up_data])
-            axes[2, 1].plot(up_ids, up_fine, 'b.-', markersize=2, linewidth=1, label='UP', alpha=0.7)
+            axes[2, 1].plot(up_axis, up_fine, 'b.-', markersize=2, linewidth=1, label='UP', alpha=0.7)
+            x_label_scan = up_xlabel
         
         if len(self.down_data) > 0:
-            down_ids = np.array([d['id'] for d in self.down_data])
+            down_axis, down_xlabel = self._get_phase_axis(self.down_data)
             down_fine = np.array([d['fine'] for d in self.down_data])
-            axes[2, 1].plot(down_ids, down_fine, 'r.-', markersize=2, linewidth=1, label='DOWN', alpha=0.7)
+            axes[2, 1].plot(down_axis, down_fine, 'r.-', markersize=2, linewidth=1, label='DOWN', alpha=0.7)
+            if down_xlabel != '相位索引 (Phase ID)':
+                x_label_scan = down_xlabel
         
-        axes[2, 1].set_xlabel('相位索引 (Phase ID)')
+        axes[2, 1].set_xlabel(x_label_scan)
         axes[2, 1].set_ylabel('Fine Time (ps)')
         axes[2, 1].set_title('Fine Time 扫描曲线对比')
         axes[2, 1].legend()
@@ -787,11 +902,13 @@ class TDCDataProcessor:
         
         # DNL和INL图（如果有足够数据）
         if show_performance and len(self.up_data) >= 10:
-            up_fine = np.array([d['fine'] for d in self.up_data])
-            up_ids = np.array([d['id'] for d in self.up_data])
+            line_up = self._build_linearized_line(self.up_data)
+            up_axis = line_up['x']
+            up_fine = line_up['y']
+            up_xlabel = '重排后相位延时 (ps)'
             
-            sorted_indices = np.argsort(up_ids)
-            sorted_phases = up_ids[sorted_indices]
+            sorted_indices = np.argsort(up_axis)
+            sorted_phases = up_axis[sorted_indices]
             sorted_times = up_fine[sorted_indices]
             
             # DNL图
@@ -807,7 +924,7 @@ class TDCDataProcessor:
                     
                     axes[3, 0].plot(valid_phases, dnl, 'g.-', markersize=2, linewidth=1)
                     axes[3, 0].axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.5)
-                    axes[3, 0].set_xlabel('相位索引 (Phase ID)')
+                    axes[3, 0].set_xlabel(up_xlabel)
                     axes[3, 0].set_ylabel('DNL (LSB)')
                     axes[3, 0].set_title(f'DNL 分析 (RMS={np.sqrt(np.mean(dnl**2)):.3f} LSB)')
                     axes[3, 0].grid(True, alpha=0.3)
@@ -821,7 +938,7 @@ class TDCDataProcessor:
                 
                 axes[3, 1].plot(sorted_phases, inl_lsb, 'm.-', markersize=2, linewidth=1)
                 axes[3, 1].axhline(y=0, color='r', linestyle='--', linewidth=1, alpha=0.5)
-                axes[3, 1].set_xlabel('相位索引 (Phase ID)')
+                axes[3, 1].set_xlabel(up_xlabel)
                 axes[3, 1].set_ylabel('INL (LSB)')
                 axes[3, 1].set_title(f'INL 分析 (RMS={np.sqrt(np.mean(inl_lsb**2)):.3f} LSB)')
                 axes[3, 1].grid(True, alpha=0.3)

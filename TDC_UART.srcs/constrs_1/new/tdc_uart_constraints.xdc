@@ -20,11 +20,11 @@ set_property IOSTANDARD DIFF_SSTL15 [get_ports SYS_CLK_N]
 # ============================================================================
 # UART 管脚约束
 # ============================================================================
-# UART 接收引脚 (RXD) - TODO: 请填写实际管脚位置
-set_property PACKAGE_PIN F25 [get_ports UART_RXD]
+# UART 接收引脚 (RXD)   J2-1
+set_property PACKAGE_PIN F25 [get_ports UART_RXD]   
 set_property IOSTANDARD LVCMOS33 [get_ports UART_RXD]
 
-# UART 发送引脚 (TXD) - TODO: 请填写实际管脚位置
+# UART 发送引脚 (TXD)   J2-2
 set_property PACKAGE_PIN D24 [get_ports UART_TXD]
 set_property IOSTANDARD LVCMOS33 [get_ports UART_TXD]
 
@@ -61,11 +61,11 @@ set_property IOSTANDARD LVCMOS33 [get_ports SIGNAL_IN_DOWN]
 # ============================================================================
 # TDC 测量信号管脚约束
 # ============================================================================
-# # UP 信号输入 - TODO: 请填写实际管脚位置
+# # UP 信号输入     J2-8
 set_property PACKAGE_PIN E18 [get_ports SIGNAL_UP]
 set_property IOSTANDARD LVCMOS18 [get_ports SIGNAL_UP]
 set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets {SIGNAL_UP_IBUF}]
-# # DOWN 信号输入 - TODO: 请填写实际管脚位置
+# # DOWN 信号输入     J2-7
 set_property PACKAGE_PIN D18 [get_ports SIGNAL_DOWN]
 set_property IOSTANDARD LVCMOS18 [get_ports SIGNAL_DOWN]
 set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets {SIGNAL_DOWN_IBUF}]
