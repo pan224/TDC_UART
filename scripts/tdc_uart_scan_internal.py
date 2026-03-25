@@ -216,8 +216,8 @@ class TDCUartScanner:
             self.serial.flush()
             print(f"[TX] 发送成功 (4字节: {data.hex()})")
             
-            # 等待发送完成
-            time.sleep(0.05)
+            # 等待发送完成（加快到 5ms）
+            time.sleep(0.0005)
             return True
         except Exception as e:
             print(f"[ERROR] 发送失败: {e}")
@@ -455,10 +455,11 @@ class TDCDataProcessor:
         """Find truncation point and rebuild a linearized phase curve.
 
         Steps:
-        1. Find truncation point near min->max jump
-        2. Circularly shift so truncation point maps to period end
-        3. Flip horizontal axis to make slope positive
-        4. Fold repeated cycles and average by phase bin
+        1. Find min and max value indices in the data
+        2. Truncation point is the boundary between min and max regions
+        3. Circularly shift so truncation point maps to period end
+        4. Flip horizontal axis if needed to make slope positive
+        5. Fold repeated cycles and average by phase bin
         """
         if not channel_data:
             return {
@@ -467,6 +468,9 @@ class TDCDataProcessor:
                 'cut': 0,
                 'period': 0,
                 'jump': 0.0,
+                'jump_idx': -1,
+                'breakpoint_found': False,
+                'flip_applied': False,
             }
 
         fine = np.array([d['fine'] for d in channel_data], dtype=float)
@@ -474,17 +478,63 @@ class TDCDataProcessor:
         period = self._estimate_period_len(fine)
         period = max(1, min(period, n))
 
-        diffs = np.diff(fine)
-        jump_idx = int(np.argmax(diffs)) if len(diffs) > 0 else 0
-        cut = (jump_idx + 1) % period
-        jump_val = float(diffs[jump_idx]) if len(diffs) > 0 else 0.0
+        # Find min and max value indices
+        min_idx = int(np.argmin(fine))
+        max_idx = int(np.argmax(fine))
+        min_val = fine[min_idx]
+        max_val = fine[max_idx]
+        value_span = max_val - min_val
+
+        # Truncation point detection: look for the largest jump in phase sequence
+        jump_threshold = max(5.0 * self.PHASE_STEP, 0.2 * self.CLK_PERIOD)
+        breakpoint_found = value_span >= jump_threshold
+
+        if breakpoint_found:
+            # Find the single largest discontinuity in the circular data
+            # Distinguish between positive jumps (low->high) and negative jumps (high->low)
+            diffs = np.diff(fine)  # Keep sign
+            abs_diffs = np.abs(diffs)
+            
+            # Find max positive and max negative jumps
+            pos_diffs = diffs.copy()
+            pos_diffs[pos_diffs < 0] = -np.inf
+            max_pos_idx = int(np.argmax(pos_diffs))
+            max_pos_jump = float(pos_diffs[max_pos_idx]) if np.isfinite(pos_diffs[max_pos_idx]) else 0.0
+            
+            neg_diffs = diffs.copy()
+            neg_diffs[neg_diffs > 0] = np.inf
+            min_neg_idx = int(np.argmin(neg_diffs))
+            max_neg_jump = float(abs(neg_diffs[min_neg_idx])) if np.isfinite(neg_diffs[min_neg_idx]) else 0.0
+            
+            # Choose the discontinuity point with larger absolute jump
+            if max_pos_jump >= max_neg_jump:
+                cut = max_pos_idx + 1
+            else:
+                cut = min_neg_idx + 1
+            
+            jump_val = float(max_val - min_val)
+            jump_idx = cut
+            largest_jump = float(np.max(abs_diffs))
+            second_largest_jump = float(np.partition(abs_diffs, -2)[-2]) if len(abs_diffs) > 1 else 0.0
+        else:
+            cut = 0
+            jump_val = 0.0
+            jump_idx = -1
+            largest_jump = 0.0
+            second_largest_jump = 0.0
 
         idx = np.arange(n)
-        shifted = (idx + (period - cut)) % period
-        flipped = (period - 1) - shifted
+        # Shift so the breakpoint moves to position 0 (mod period)
+        # This maps the discontinuity to the start, making the phase curve continuous
+        shifted = (idx - cut) % period
+
+        # If value_span is positive (min->max ascending), shifted line usually has negative slope.
+        # Apply horizontal flip to make slope positive. Otherwise keep as-is.
+        flip_applied = breakpoint_found and (jump_val > 0)
+        x_reordered = (period - 1) - shifted if flip_applied else shifted
 
         # Fold all cycles into one period by averaging same x bin
-        x_int = flipped.astype(int)
+        x_int = x_reordered.astype(int)
         sums = np.bincount(x_int, weights=fine, minlength=period)
         counts = np.bincount(x_int, minlength=period)
         valid = counts > 0
@@ -501,6 +551,16 @@ class TDCDataProcessor:
             'cut': cut,
             'period': period,
             'jump': jump_val,
+            'jump_idx': jump_idx,
+            'breakpoint_found': bool(breakpoint_found),
+            'flip_applied': bool(flip_applied),
+            'min_idx': min_idx,
+            'max_idx': max_idx,
+            'min_val': float(min_val),
+            'max_val': float(max_val),
+            'value_span': float(value_span),
+            'largest_jump': largest_jump,
+            'second_largest_jump': second_largest_jump,
         }
         
     def process(self):
@@ -576,24 +636,48 @@ class TDCDataProcessor:
         if not PLOT_AVAILABLE:
             return
         
-        print(f"\n扫描模式分析 ({len(self.up_data)}个相位):")
-        print("-" * 50)
+        print(f"\n扫描模式分析 ({len(self.up_data)}个UP相位, {len(self.down_data)}个DOWN相位):")
+        print("-" * 80)
         print(f"提示: 225步(17.17ps/step)可覆盖完整3864ps周期")
 
         line_up = self._build_linearized_line(self.up_data)
+        line_down = self._build_linearized_line(self.down_data)
+        
+        # 输出 UP 通道参数
+        print("\n[UP 通道]")
+        print(f"  最小值: {line_up['min_val']:.1f} ps @ index {line_up['min_idx']}")
+        print(f"  最大值: {line_up['max_val']:.1f} ps @ index {line_up['max_idx']}")
+        print(f"  值域跨度: {line_up['value_span']:.1f} ps")
+        print(f"  截断点: {line_up['cut']} / 周期: {line_up['period']}")
+        print(f"  最大跳变: {line_up['largest_jump']:.1f} ps, 次大跳变: {line_up['second_largest_jump']:.1f} ps")
+        print(f"  断点检测: {line_up['breakpoint_found']}, 翻转应用: {line_up['flip_applied']}")
+        
+        # 输出 DOWN 通道参数
+        print("\n[DOWN 通道]")
+        print(f"  最小值: {line_down['min_val']:.1f} ps @ index {line_down['min_idx']}")
+        print(f"  最大值: {line_down['max_val']:.1f} ps @ index {line_down['max_idx']}")
+        print(f"  值域跨度: {line_down['value_span']:.1f} ps")
+        print(f"  截断点: {line_down['cut']} / 周期: {line_down['period']}")
+        print(f"  最大跳变: {line_down['largest_jump']:.1f} ps, 次大跳变: {line_down['second_largest_jump']:.1f} ps")
+        print(f"  断点检测: {line_down['breakpoint_found']}, 翻转应用: {line_down['flip_applied']}")
+        
+        # 对比二者
+        print("\n[对比]")
+        print(f"  周期估计是否一致: {line_up['period'] == line_down['period']}")
+        print(f"  翻转应用是否一致: {line_up['flip_applied'] == line_down['flip_applied']}")
+        
         x_line = line_up['x']
         y_line = line_up['y']
 
         if len(y_line) == 0:
-            print("  [WARN] 线性化曲线为空")
+            print("  [WARN] UP 线性化曲线为空")
             return
 
-        print(f"  截断点(步): {line_up['cut']} / 周期点数: {line_up['period']}")
-        print(f"  截断跳变幅度: {line_up['jump']:.1f} ps")
-        print(f"  线性化相位范围: {x_line.min():.1f} - {x_line.max():.1f} ps")
+        print(f"\n[UP 线性化后]")
+        print(f"  相位范围: {x_line.min():.1f} - {x_line.max():.1f} ps")
         print(f"  Fine time 范围: {y_line.min():.1f} - {y_line.max():.1f} ps")
         print(f"  Fine time 变化幅度: {y_line.max() - y_line.min():.1f} ps")
-        print("  理论关系（翻转后）: Fine = PhaseDelay + offset")
+        print(f"  理论关系（翻转后）: Fine = PhaseDelay + offset")
 
         if len(x_line) > 2:
             coeffs = np.polyfit(x_line, y_line, 1)
@@ -622,6 +706,23 @@ class TDCDataProcessor:
         line_up = self._build_linearized_line(self.up_data)
         phase_axis = line_up['x']
         fine_values = line_up['y']
+        
+        # Verify flip was applied and reorder has monotonicity
+        print(f"\n[重排信息]")
+        print(f"  翻转应用: {line_up['flip_applied']}")
+        print(f"  截断点检测: {line_up['breakpoint_found']}")
+        print(f"  周期: {line_up['period']} steps")
+        
+        # Check monotonicity before analysis
+        diffs_before = np.diff(fine_values)
+        decreasing_count_before = np.sum(diffs_before < 0)
+        
+        if decreasing_count_before > 0:
+            print(f"  [WARN] 重排后仍有 {decreasing_count_before} 处递减 - 数据未完全单调化")
+            print(f"         识别非单调位置...")
+            decreasing_indices = np.where(diffs_before < 0)[0]
+            for idx in decreasing_indices[:3]:  # Show first 3 violations
+                print(f"         位置 {idx}: fine[{idx}]={fine_values[idx]:.1f} -> fine[{idx+1}]={fine_values[idx+1]:.1f} (跳变 {diffs_before[idx]:+.1f})")
 
         if len(fine_values) < 10:
             print("[WARN] 线性化后数据量不足，无法进行性能分析")
@@ -657,23 +758,33 @@ class TDCDataProcessor:
         time_diffs = np.diff(sorted_times)
         jump_mask = np.abs(time_diffs) < self.CLK_PERIOD/2
         valid_diffs = time_diffs[jump_mask]
-        
+
         if len(valid_diffs) > 0:
+            # Separate positive and negative diffs
+            positive_diffs = valid_diffs[valid_diffs > 0]
+            negative_diffs = valid_diffs[valid_diffs < 0]
+            
             avg_resolution = np.abs(valid_diffs).mean()
             resolution_std = np.abs(valid_diffs).std()
-            decreasing_ratio = np.sum(valid_diffs < 0) / len(valid_diffs)
+            
+            # Count increasing and decreasing transitions
+            increasing_count = len(positive_diffs)
+            decreasing_count = len(negative_diffs)
+            total_count = len(valid_diffs)
             
             print(f"  平均步进: {avg_resolution:.3f} ps")
             print(f"  步进标准差: {resolution_std:.3f} ps")
             print(f"  理论步进: {self.PHASE_STEP:.3f} ps")
             print(f"  步进误差: {abs(avg_resolution - self.PHASE_STEP):.3f} ps")
-            print(f"  递减比例: {decreasing_ratio*100:.1f}%")
+            print(f"  递增转换: {increasing_count} ({(increasing_count/total_count)*100:.1f}%)")
+            print(f"  递减转换: {decreasing_count} ({(decreasing_count/total_count)*100:.1f}%)")
             
             performance['resolution'] = {
                 'avg_step': float(avg_resolution),
                 'std_step': float(resolution_std),
                 'theoretical_step': float(self.PHASE_STEP),
-                'decreasing_ratio': float(decreasing_ratio)
+                'increasing': int(increasing_count),
+                'decreasing': int(decreasing_count)
             }
         
         # 3. LSB分析
@@ -742,7 +853,11 @@ class TDCDataProcessor:
         total_valid = len(valid_transitions)
         
         print(f"  有效转换数: {total_valid}")
+        print(f"  递增转换: {total_valid - monotonic_decreases} ({((total_valid - monotonic_decreases)/total_valid)*100:.1f}%)")
         print(f"  递减转换: {monotonic_decreases} ({(monotonic_decreases/total_valid)*100:.1f}%)")
+        
+        if monotonic_decreases > 0:
+            print(f"  [建议] 检查翻转逻辑是否正确应用")
         
         performance['monotonicity'] = {
             'decreases': int(monotonic_decreases),

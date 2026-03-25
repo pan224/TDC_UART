@@ -13,6 +13,7 @@ import os
 import threading
 import traceback
 import queue
+import math
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -126,22 +127,48 @@ class TDCGuiApp:
 
         ttk.Separator(frame, orient="horizontal").grid(row=5, column=0, columnspan=3, sticky="ew", pady=6)
 
-        ttk.Label(frame, text="连续扫描起始").grid(row=6, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(frame, text="统计相位").grid(row=6, column=0, sticky="w", padx=4, pady=2)
+        self.stat_phase_var = tk.StringVar(value="0")
+        ttk.Entry(frame, textvariable=self.stat_phase_var, width=10).grid(row=6, column=1, sticky="w", padx=4, pady=2)
+
+        ttk.Label(frame, text="样本对数 n").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        self.stat_count_var = tk.StringVar(value="200")
+        ttk.Entry(frame, textvariable=self.stat_count_var, width=10).grid(row=7, column=1, sticky="w", padx=4, pady=2)
+        ttk.Button(
+            frame,
+            text="单步统计（UP/DOWN交替）",
+            command=lambda: self._run_task(self._task_single_step_stats),
+        ).grid(row=7, column=2, sticky="ew", padx=4, pady=2)
+
+        ttk.Separator(frame, orient="horizontal").grid(row=8, column=0, columnspan=3, sticky="ew", pady=6)
+
+        ttk.Label(frame, text="全步进样本对数 n").grid(row=9, column=0, sticky="w", padx=4, pady=2)
+        self.full_stat_count_var = tk.StringVar(value="30")
+        ttk.Entry(frame, textvariable=self.full_stat_count_var, width=10).grid(row=9, column=1, sticky="w", padx=4, pady=2)
+        ttk.Button(
+            frame,
+            text="全步进统计 0..224（均值+标准差）",
+            command=lambda: self._run_task(self._task_full_phase_stats),
+        ).grid(row=9, column=2, sticky="ew", padx=4, pady=2)
+
+        ttk.Separator(frame, orient="horizontal").grid(row=10, column=0, columnspan=3, sticky="ew", pady=6)
+
+        ttk.Label(frame, text="连续扫描起始").grid(row=11, column=0, sticky="w", padx=4, pady=2)
         self.cont_start_var = tk.StringVar(value="0")
-        ttk.Entry(frame, textvariable=self.cont_start_var, width=10).grid(row=6, column=1, sticky="w", padx=4, pady=2)
+        ttk.Entry(frame, textvariable=self.cont_start_var, width=10).grid(row=11, column=1, sticky="w", padx=4, pady=2)
 
-        ttk.Label(frame, text="连续扫描结束").grid(row=7, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(frame, text="连续扫描结束").grid(row=12, column=0, sticky="w", padx=4, pady=2)
         self.cont_end_var = tk.StringVar(value="224")
-        ttk.Entry(frame, textvariable=self.cont_end_var, width=10).grid(row=7, column=1, sticky="w", padx=4, pady=2)
+        ttk.Entry(frame, textvariable=self.cont_end_var, width=10).grid(row=12, column=1, sticky="w", padx=4, pady=2)
 
-        ttk.Label(frame, text="通道（固定）").grid(row=8, column=0, sticky="w", padx=4, pady=2)
-        ttk.Label(frame, text="BOTH").grid(row=8, column=1, sticky="w", padx=4, pady=2)
+        ttk.Label(frame, text="通道（固定）").grid(row=13, column=0, sticky="w", padx=4, pady=2)
+        ttk.Label(frame, text="BOTH").grid(row=13, column=1, sticky="w", padx=4, pady=2)
 
         ttk.Button(
             frame,
             text="执行连续单步扫描",
             command=lambda: self._run_task(self._task_continuous_scan),
-        ).grid(row=9, column=0, columnspan=3, sticky="ew", padx=4, pady=6)
+        ).grid(row=14, column=0, columnspan=3, sticky="ew", padx=4, pady=6)
 
         for col in range(3):
             frame.grid_columnconfigure(col, weight=1)
@@ -225,6 +252,15 @@ class TDCGuiApp:
             raise ValueError(f"相位超出范围 [{min_value}, {max_value}]: {iv}")
         return iv
 
+    def _validate_positive_int(self, value: str, min_value=1, max_value=1000000):
+        try:
+            iv = int(value)
+        except ValueError:
+            raise ValueError(f"无效整数输入: {value}")
+        if iv < min_value or iv > max_value:
+            raise ValueError(f"数值超出范围 [{min_value}, {max_value}]: {iv}")
+        return iv
+
     def _task_calibration(self):
         self._log("[任务] 发送校准命令")
         ok = self.scanner.start_calibration()
@@ -237,6 +273,326 @@ class TDCGuiApp:
     def _task_scan_single_both(self):
         phase = self._validate_phase(self.single_phase_var.get(), 0, 255)
         self._task_scan(0, phase, 0b11)
+
+    def _task_single_step_stats(self):
+        phase = self._validate_phase(self.stat_phase_var.get(), 0, 255)
+        pair_count = self._validate_positive_int(self.stat_count_var.get(), 1, 200000)
+
+        up_fine_ps = []
+        down_fine_ps = []
+        max_retries = 3
+
+        self._log("=" * 60)
+        self._log(f"[任务] 单步统计测试 相位={phase}, 样本对数={pair_count}")
+        self._log("[信息] 每次发送 BOTH 命令，分别统计 UP 与 DOWN 的分布")
+
+        for i in range(pair_count):
+            if i == 0 or (i + 1) % 20 == 0 or (i + 1) == pair_count:
+                self._log(f"[信息] 采样进度 {i + 1}/{pair_count}")
+
+            up_pkt = None
+            down_pkt = None
+            success = False
+
+            for attempt in range(1, max_retries + 1):
+                ok = self.scanner.start_scan(scan_mode=0, phase=phase, channel=TDCUartScanner.CH_BOTH)
+                if not ok:
+                    if attempt == max_retries:
+                        self._log(f"[警告] 第{i + 1}对: 命令发送失败 (重试{max_retries}次)")
+                    continue
+
+                rx_data = self.scanner.receive_data(expected_count=2, timeout=4.0)
+                if not rx_data:
+                    if attempt == max_retries:
+                        self._log(f"[警告] 第{i + 1}对: 未收到配对数据 (重试{max_retries}次)")
+                    continue
+
+                up_pkt = next((d for d in rx_data if d.get('type') == TDCUartScanner.TYPE_UP), None)
+                down_pkt = next((d for d in rx_data if d.get('type') == TDCUartScanner.TYPE_DOWN), None)
+                if up_pkt is not None and down_pkt is not None:
+                    success = True
+                    break
+
+                if attempt == max_retries:
+                    self._log(f"[警告] 第{i + 1}对: 数据不完整(缺UP或DOWN), 已重试{max_retries}次")
+
+            if not success:
+                continue
+
+            up_fine_ps.append(float(up_pkt['fine']))
+            down_fine_ps.append(float(down_pkt['fine']))
+
+        valid_n = min(len(up_fine_ps), len(down_fine_ps))
+        if valid_n == 0:
+            self._log("[错误] 未得到任何有效样本，无法统计")
+            return
+
+        up_mean_ps = sum(up_fine_ps) / len(up_fine_ps)
+        up_var_ps2 = sum((x - up_mean_ps) ** 2 for x in up_fine_ps) / len(up_fine_ps)
+        up_std_ps = math.sqrt(up_var_ps2)
+        up_min_ps = min(up_fine_ps)
+        up_max_ps = max(up_fine_ps)
+
+        down_mean_ps = sum(down_fine_ps) / len(down_fine_ps)
+        down_var_ps2 = sum((x - down_mean_ps) ** 2 for x in down_fine_ps) / len(down_fine_ps)
+        down_std_ps = math.sqrt(down_var_ps2)
+        down_min_ps = min(down_fine_ps)
+        down_max_ps = max(down_fine_ps)
+
+        self._log("-" * 60)
+        self._log(f"[结果] 有效样本对数: {valid_n}/{pair_count}")
+        self._log(f"[结果][UP] 均值/方差/标准差: {up_mean_ps:.3f} ps / {up_var_ps2:.3f} ps^2 / {up_std_ps:.3f} ps")
+        self._log(f"[结果][UP] 最小/最大: {up_min_ps:.3f} / {up_max_ps:.3f} ps")
+        self._log(f"[结果][DOWN] 均值/方差/标准差: {down_mean_ps:.3f} ps / {down_var_ps2:.3f} ps^2 / {down_std_ps:.3f} ps")
+        self._log(f"[结果][DOWN] 最小/最大: {down_min_ps:.3f} / {down_max_ps:.3f} ps")
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs("tdc_results", exist_ok=True)
+        summary_file = os.path.join("tdc_results", f"single_step_stats_phase{phase}_{timestamp}.txt")
+        with open(summary_file, "w", encoding="utf-8") as f:
+            f.write("# Single-step BOTH-command statistics (UP and DOWN separately)\n")
+            f.write(f"phase={phase}\n")
+            f.write(f"requested_pairs={pair_count}\n")
+            f.write(f"valid_pairs={valid_n}\n")
+            f.write("\n[UP]\n")
+            f.write(f"mean_ps={up_mean_ps:.6f}\n")
+            f.write(f"variance_ps2={up_var_ps2:.6f}\n")
+            f.write(f"std_ps={up_std_ps:.6f}\n")
+            f.write(f"min_ps={up_min_ps:.6f}\n")
+            f.write(f"max_ps={up_max_ps:.6f}\n")
+            f.write("\n[DOWN]\n")
+            f.write(f"mean_ps={down_mean_ps:.6f}\n")
+            f.write(f"variance_ps2={down_var_ps2:.6f}\n")
+            f.write(f"std_ps={down_std_ps:.6f}\n")
+            f.write(f"min_ps={down_min_ps:.6f}\n")
+            f.write(f"max_ps={down_max_ps:.6f}\n")
+            f.write("\n# up_fine_ps list\n")
+            for v in up_fine_ps:
+                f.write(f"{v:.6f}\n")
+            f.write("\n# down_fine_ps list\n")
+            for v in down_fine_ps:
+                f.write(f"{v:.6f}\n")
+        self._log(f"[信息] 统计结果已保存: {summary_file}")
+
+        if PLOT_AVAILABLE and valid_n > 5:
+            try:
+                import numpy as np
+                import matplotlib.pyplot as plt
+
+                fig, (ax_up, ax_down) = plt.subplots(2, 1, figsize=(8, 8), sharex=False)
+                bins = max(20, min(120, int(math.sqrt(valid_n) * 2)))
+                ax_up.hist(np.array(up_fine_ps), bins=bins, alpha=0.75, color='royalblue', edgecolor='black')
+                ax_up.axvline(up_mean_ps, color='red', linestyle='--', linewidth=1.5, label=f"Mean={up_mean_ps:.2f} ps")
+                ax_up.set_title(f"UP Distribution (phase={phase})")
+                ax_up.set_xlabel("UP Fine Time (ps)")
+                ax_up.set_ylabel("Count")
+                ax_up.grid(True, alpha=0.3)
+                ax_up.legend()
+
+                ax_down.hist(np.array(down_fine_ps), bins=bins, alpha=0.75, color='darkorange', edgecolor='black')
+                ax_down.axvline(down_mean_ps, color='red', linestyle='--', linewidth=1.5, label=f"Mean={down_mean_ps:.2f} ps")
+                ax_down.set_title(f"DOWN Distribution (phase={phase})")
+                ax_down.set_xlabel("DOWN Fine Time (ps)")
+                ax_down.set_ylabel("Count")
+                ax_down.grid(True, alpha=0.3)
+                ax_down.legend()
+                fig.tight_layout()
+
+                plot_file = os.path.join("tdc_results", f"single_step_stats_phase{phase}_{timestamp}.png")
+                fig.savefig(plot_file, dpi=200)
+                plt.close(fig)
+                self._log(f"[信息] 分布图已保存: {plot_file}")
+            except Exception as exc:
+                self._log(f"[警告] 绘制分布图失败: {exc}")
+
+    def _task_full_phase_stats(self):
+        pair_count = self._validate_positive_int(self.full_stat_count_var.get(), 1, 20000)
+        max_retries = 3
+
+        phase_list = []
+        up_mean_list = []
+        up_std_list = []
+        up_var_list = []
+        down_mean_list = []
+        down_std_list = []
+        down_var_list = []
+        valid_pairs_list = []
+
+        self._log("=" * 60)
+        self._log(f"[任务] 全步进统计 0..224，每步样本对数={pair_count}")
+        self._log("[信息] 输出: 四子图(UP均值、DOWN均值、UP标准差、DOWN标准差)，横坐标均为步进值")
+
+        for phase in range(225):
+            if phase == 0 or phase % 10 == 0 or phase == 224:
+                self._log(f"[信息] 全步进进度 相位 {phase}/224")
+
+            up_vals = []
+            down_vals = []
+
+            for _ in range(pair_count):
+                up_pkt = None
+                down_pkt = None
+                success = False
+
+                for _attempt in range(max_retries):
+                    ok = self.scanner.start_scan(scan_mode=0, phase=phase, channel=TDCUartScanner.CH_BOTH)
+                    if not ok:
+                        continue
+
+                    rx_data = self.scanner.receive_data(expected_count=2, timeout=4.0)
+                    if not rx_data:
+                        continue
+
+                    up_pkt = next((d for d in rx_data if d.get('type') == TDCUartScanner.TYPE_UP), None)
+                    down_pkt = next((d for d in rx_data if d.get('type') == TDCUartScanner.TYPE_DOWN), None)
+                    if up_pkt is not None and down_pkt is not None:
+                        success = True
+                        break
+
+                if success:
+                    up_vals.append(float(up_pkt['fine']))
+                    down_vals.append(float(down_pkt['fine']))
+
+            valid_n = min(len(up_vals), len(down_vals))
+            if valid_n == 0:
+                self._log(f"[警告] 相位 {phase}: 无有效样本，已跳过")
+                continue
+
+            up_mean = sum(up_vals) / len(up_vals)
+            up_var = sum((x - up_mean) ** 2 for x in up_vals) / len(up_vals)
+            up_std = math.sqrt(up_var)
+
+            down_mean = sum(down_vals) / len(down_vals)
+            down_var = sum((x - down_mean) ** 2 for x in down_vals) / len(down_vals)
+            down_std = math.sqrt(down_var)
+
+            phase_list.append(phase)
+            up_mean_list.append(up_mean)
+            up_std_list.append(up_std)
+            up_var_list.append(up_var)
+            down_mean_list.append(down_mean)
+            down_std_list.append(down_std)
+            down_var_list.append(down_var)
+            valid_pairs_list.append(valid_n)
+
+        if not phase_list:
+            self._log("[错误] 全步进统计未得到有效数据")
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs("tdc_results", exist_ok=True)
+        summary_file = os.path.join("tdc_results", f"full_phase_stats_0_224_{timestamp}.csv")
+        with open(summary_file, "w", encoding="utf-8") as f:
+            f.write("phase,valid_pairs,up_mean_ps,up_var_ps2,up_std_ps,down_mean_ps,down_var_ps2,down_std_ps\n")
+            for i, phase in enumerate(phase_list):
+                f.write(
+                    f"{phase},{valid_pairs_list[i]},"
+                    f"{up_mean_list[i]:.6f},{up_var_list[i]:.6f},{up_std_list[i]:.6f},"
+                    f"{down_mean_list[i]:.6f},{down_var_list[i]:.6f},{down_std_list[i]:.6f}\n"
+                )
+        self._log(f"[信息] 全步进统计结果已保存: {summary_file}")
+
+        self._log(f"[结果][UP] 均值范围: {min(up_mean_list):.3f} ~ {max(up_mean_list):.3f} ps")
+        self._log(f"[结果][UP] 标准差均值: {sum(up_std_list)/len(up_std_list):.3f} ps")
+        self._log(f"[结果][DOWN] 均值范围: {min(down_mean_list):.3f} ~ {max(down_mean_list):.3f} ps")
+        self._log(f"[结果][DOWN] 标准差均值: {sum(down_std_list)/len(down_std_list):.3f} ps")
+
+        if PLOT_AVAILABLE and len(phase_list) > 3:
+            try:
+                import numpy as np
+                import matplotlib.pyplot as plt
+
+                x = np.array(phase_list, dtype=float)
+                up_mean_arr = np.array(up_mean_list, dtype=float)
+                up_std_arr = np.array(up_std_list, dtype=float)
+                down_mean_arr = np.array(down_mean_list, dtype=float)
+                down_std_arr = np.array(down_std_list, dtype=float)
+
+                # Detect very large std outliers so they do not dominate y-axis.
+                def _detect_std_outliers(std_arr, phase_arr, channel_name):
+                    if len(std_arr) < 6:
+                        return np.zeros(len(std_arr), dtype=bool), []
+
+                    median_val = float(np.median(std_arr))
+                    mad = float(np.median(np.abs(std_arr - median_val)))
+
+                    if mad < 1e-9:
+                        threshold = median_val * 3.0 if median_val > 0 else float('inf')
+                    else:
+                        threshold = median_val + 6.0 * mad
+
+                    outlier_mask = std_arr > threshold
+                    outlier_rows = []
+                    outlier_idx = np.where(outlier_mask)[0]
+                    for idx in outlier_idx:
+                        outlier_rows.append((channel_name, int(phase_arr[idx]), float(std_arr[idx])))
+                    return outlier_mask, outlier_rows
+
+                up_std_outlier_mask, up_outlier_rows = _detect_std_outliers(up_std_arr, x, "UP")
+                down_std_outlier_mask, down_outlier_rows = _detect_std_outliers(down_std_arr, x, "DOWN")
+                all_outlier_rows = sorted(up_outlier_rows + down_outlier_rows, key=lambda t: t[2], reverse=True)
+                shown_outlier_rows = all_outlier_rows[:5]
+
+                fig, axes = plt.subplots(2, 2, figsize=(12, 9), sharex=False)
+
+                axes[0, 0].plot(x, up_mean_arr, '.-', color='royalblue', label='UP Mean')
+                axes[0, 0].set_xlabel("Phase Step")
+                axes[0, 0].set_ylabel("Mean Fine (ps)")
+                axes[0, 0].set_title("UP Mean vs Phase Step")
+                axes[0, 0].grid(True, alpha=0.3)
+                axes[0, 0].legend()
+
+                axes[0, 1].plot(x, down_mean_arr, '.-', color='darkorange', label='DOWN Mean')
+                axes[0, 1].set_xlabel("Phase Step")
+                axes[0, 1].set_ylabel("Mean Fine (ps)")
+                axes[0, 1].set_title("DOWN Mean vs Phase Step")
+                axes[0, 1].grid(True, alpha=0.3)
+                axes[0, 1].legend()
+
+                up_std_plot_mask = ~up_std_outlier_mask
+                axes[1, 0].plot(x[up_std_plot_mask], up_std_arr[up_std_plot_mask], '.-', color='royalblue', label='UP Std')
+                axes[1, 0].set_xlabel("Phase Step")
+                axes[1, 0].set_ylabel("Std (ps)")
+                axes[1, 0].set_title("UP Std vs Phase Step")
+                axes[1, 0].grid(True, alpha=0.3)
+                axes[1, 0].legend()
+
+                down_std_plot_mask = ~down_std_outlier_mask
+                axes[1, 1].plot(x[down_std_plot_mask], down_std_arr[down_std_plot_mask], '.-', color='darkorange', label='DOWN Std')
+                axes[1, 1].set_xlabel("Phase Step")
+                axes[1, 1].set_ylabel("Std (ps)")
+                axes[1, 1].set_title("DOWN Std vs Phase Step")
+                axes[1, 1].grid(True, alpha=0.3)
+                axes[1, 1].legend()
+
+                if all_outlier_rows:
+                    table_lines = ["Filtered large-std points (excluded from std plots):", "Channel  Phase  Std(ps)"]
+                    for ch, ph, std_val in shown_outlier_rows:
+                        table_lines.append(f"{ch:>7}  {ph:>5}  {std_val:>7.3f}")
+                    if len(all_outlier_rows) > len(shown_outlier_rows):
+                        table_lines.append(f"... and {len(all_outlier_rows) - len(shown_outlier_rows)} more")
+
+                    fig.subplots_adjust(bottom=0.20)
+                    fig.text(
+                        0.5,
+                        0.04,
+                        "\n".join(table_lines),
+                        ha='center',
+                        va='bottom',
+                        fontsize=9,
+                        family='monospace',
+                        bbox=dict(boxstyle='round,pad=0.4', facecolor='#fffbe6', edgecolor='#999999', alpha=0.95),
+                    )
+
+                    self._log(f"[信息] 已从标准差子图中过滤 {len(all_outlier_rows)} 个大离群点，并在图中表格列出")
+
+                fig.tight_layout()
+                plot_file = os.path.join("tdc_results", f"full_phase_stats_0_224_{timestamp}.png")
+                fig.savefig(plot_file, dpi=220)
+                plt.close(fig)
+                self._log(f"[信息] 全步进统计四分图已保存: {plot_file}")
+            except Exception as exc:
+                self._log(f"[警告] 绘制全步进统计图失败: {exc}")
 
     def _task_scan(self, scan_mode, phase, channel):
         mode_name = "全扫描" if scan_mode == 1 else "单步"
