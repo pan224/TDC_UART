@@ -214,11 +214,17 @@ set_max_delay -from [get_pins tdc_uart_inst/signal_mux_inst/down_mux_inst/O] \
 # ============================================================================
 # TDC 延迟线物理位置约束
 # ============================================================================
+# # DOWN通道
+# set_property LOC SLICE_X0Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_0/gen_carry0_real.carry4_0]
+# set_property LOC SLICE_X10Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_90/gen_carry0_real.carry4_0]
+# set_property LOC SLICE_X20Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_180/gen_carry0_real.carry4_0]
+# set_property LOC SLICE_X30Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_270/gen_carry0_real.carry4_0]
+
 # DOWN通道
-set_property LOC SLICE_X0Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_0/gen_carry0_real.carry4_0]
-set_property LOC SLICE_X10Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_90/gen_carry0_real.carry4_0]
-set_property LOC SLICE_X20Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_180/gen_carry0_real.carry4_0]
-set_property LOC SLICE_X30Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_270/gen_carry0_real.carry4_0]
+set_property LOC SLICE_X119Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_0/gen_carry0_real.carry4_0]
+set_property LOC SLICE_X109Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_90/gen_carry0_real.carry4_0]
+set_property LOC SLICE_X99Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_180/gen_carry0_real.carry4_0]
+set_property LOC SLICE_X89Y0 [get_cells tdc_uart_inst/channel_down_inst/dl_sync_inst/dl_270/gen_carry0_real.carry4_0]
 # UP通道
 set_property LOC SLICE_X40Y0 [get_cells tdc_uart_inst/channel_up_inst/dl_sync_inst/dl_0/gen_carry0_real.carry4_0]
 set_property LOC SLICE_X50Y0 [get_cells tdc_uart_inst/channel_up_inst/dl_sync_inst/dl_90/gen_carry0_real.carry4_0]
